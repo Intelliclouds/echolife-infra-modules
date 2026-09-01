@@ -26,16 +26,7 @@ resource "aws_eks_cluster" "this" {
   # Kubernetes Secret Encryption
   ##########################################
 
-  encryption_config {
-
-    provider {
-      key_arn = data.aws_kms_alias.eks.target_key_arn
-    }
-
-    resources = local.encryption_resources
-
-  }
-
+  
   ##########################################
   # Control Plane Logging
   ##########################################
