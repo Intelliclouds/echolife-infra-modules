@@ -1,0 +1,1148 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..4879863
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,5 @@
++**/.terraform/
++**/.terraform.lock.hcl
++**/*.tfstate
++**/*.tfstate.*
++**/*.tfvars
+diff --git a/eks-addons/addons.tf b/eks-addons/addons.tf
+new file mode 100644
+index 0000000..5459bbc
+--- /dev/null
++++ b/eks-addons/addons.tf
+@@ -0,0 +1,78 @@
++##########################################
++# CoreDNS
++##########################################
++
++resource "aws_eks_addon" "coredns" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "coredns"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_eks_node_group.this
++  ]
++}
++##########################################
++# kube-proxy
++##########################################
++
++resource "aws_eks_addon" "kube_proxy" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "kube-proxy"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_eks_node_group.this
++  ]
++}
++##########################################
++# Amazon VPC CNI
++##########################################
++
++resource "aws_eks_addon" "vpc_cni" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "vpc-cni"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_eks_node_group.this
++  ]
++}
++##########################################
++# EBS CSI Driver
++##########################################
++
++resource "aws_eks_addon" "ebs_csi" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "aws-ebs-csi-driver"
++
++  service_account_role_arn = aws_iam_role.ebs_csi_role.arn
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.node_group_name}-ebs-csi"
++    }
++  )
++
++  depends_on = [
++    aws_iam_role_policy_attachment.ebs_csi_policy,
++    aws_eks_node_group.this
++  ]
++}
+diff --git a/eks-addons/coredns.tf b/eks-addons/coredns.tf
+new file mode 100644
+index 0000000..d151409
+--- /dev/null
++++ b/eks-addons/coredns.tf
+@@ -0,0 +1,17 @@
++##########################################
++# CoreDNS
++##########################################
++
++resource "aws_eks_addon" "coredns" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "coredns"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_iam_role_policy_attachment.ebs_csi_policy
++  ]
++}
+diff --git a/eks-addons/data.tf b/eks-addons/data.tf
+new file mode 100644
+index 0000000..1eee962
+--- /dev/null
++++ b/eks-addons/data.tf
+@@ -0,0 +1,9 @@
++##########################################
++# Existing EKS Cluster
++##########################################
++
++data "aws_eks_cluster" "this" {
++
++  name = var.cluster_name
++
++}
+diff --git a/eks-addons/ebs-csi.tf b/eks-addons/ebs-csi.tf
+new file mode 100644
+index 0000000..8c3c8c9
+--- /dev/null
++++ b/eks-addons/ebs-csi.tf
+@@ -0,0 +1,26 @@
++##########################################
++# Amazon EBS CSI Driver
++##########################################
++
++resource "aws_eks_addon" "ebs_csi" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "aws-ebs-csi-driver"
++
++  service_account_role_arn = aws_iam_role.ebs_csi_role.arn
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.cluster_name}-ebs-csi"
++    }
++  )
++
++  depends_on = [
++    aws_iam_role_policy_attachment.ebs_csi_policy
++  ]
++}
+diff --git a/eks-addons/iam.tf b/eks-addons/iam.tf
+new file mode 100644
+index 0000000..21bd227
+--- /dev/null
++++ b/eks-addons/iam.tf
+@@ -0,0 +1,69 @@
++##########################################
++# EBS CSI Trust Policy
++##########################################
++
++data "aws_iam_policy_document" "ebs_csi_assume_role" {
++
++  statement {
++
++    effect = "Allow"
++
++    actions = [
++      "sts:AssumeRoleWithWebIdentity"
++    ]
++
++    principals {
++
++      type = "Federated"
++
++      identifiers = [
++        var.oidc_provider_arn
++      ]
++
++    }
++
++    condition {
++
++      test = "StringEquals"
++
++      variable = "${replace(var.oidc_provider_url, "https://", "")}:sub"
++
++      values = [
++        "system:serviceaccount:kube-system:ebs-csi-controller-sa"
++      ]
++
++    }
++
++    condition {
++
++      test = "StringEquals"
++
++      variable = "${replace(var.oidc_provider_url, "https://", "")}:aud"
++
++      values = [
++        "sts.amazonaws.com"
++      ]
++
++    }
++
++  }
++
++}
++
++resource "aws_iam_role" "ebs_csi_role" {
++
++  name = "${var.project_name}-${var.environment}-ebs-csi"
++
++  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
++
++  tags = var.tags
++
++}
++
++resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
++
++  role       = aws_iam_role.ebs_csi_role.name
++
++  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
++
++}
+diff --git a/eks-addons/kube-proxy.tf b/eks-addons/kube-proxy.tf
+new file mode 100644
+index 0000000..8c2e690
+--- /dev/null
++++ b/eks-addons/kube-proxy.tf
+@@ -0,0 +1,17 @@
++##########################################
++# kube-proxy
++##########################################
++
++resource "aws_eks_addon" "kube_proxy" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "kube-proxy"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_iam_role_policy_attachment.ebs_csi_policy
++  ]
++}
+diff --git a/eks-addons/outputs.tf b/eks-addons/outputs.tf
+new file mode 100644
+index 0000000..7dd3c4a
+--- /dev/null
++++ b/eks-addons/outputs.tf
+@@ -0,0 +1,28 @@
++##########################################
++# Add-on Outputs
++##########################################
++
++output "coredns_version" {
++  description = "CoreDNS Add-on Version"
++  value       = aws_eks_addon.coredns.addon_version
++}
++
++output "kube_proxy_version" {
++  description = "Kube Proxy Add-on Version"
++  value       = aws_eks_addon.kube_proxy.addon_version
++}
++
++output "vpc_cni_version" {
++  description = "VPC CNI Add-on Version"
++  value       = aws_eks_addon.vpc_cni.addon_version
++}
++
++output "ebs_csi_version" {
++  description = "EBS CSI Driver Version"
++  value       = aws_eks_addon.ebs_csi.addon_version
++}
++
++output "ebs_csi_role_arn" {
++  description = "IAM Role ARN used by EBS CSI Driver"
++  value       = aws_iam_role.ebs_csi_role.arn
++}
+diff --git a/eks-addons/variables.tf b/eks-addons/variables.tf
+new file mode 100644
+index 0000000..1028961
+--- /dev/null
++++ b/eks-addons/variables.tf
+@@ -0,0 +1,40 @@
++##########################################
++# Project
++##########################################
++
++variable "project_name" {
++  type = string
++}
++
++variable "environment" {
++  type = string
++}
++
++##########################################
++# Cluster
++##########################################
++
++variable "cluster_name" {
++  type = string
++}
++
++##########################################
++# OIDC
++##########################################
++
++variable "oidc_provider_arn" {
++  type = string
++}
++
++variable "oidc_provider_url" {
++  type = string
++}
++
++##########################################
++# Tags
++##########################################
++
++variable "tags" {
++  type    = map(string)
++  default = {}
++}
+diff --git a/eks-addons/versions.tf b/eks-addons/versions.tf
+new file mode 100644
+index 0000000..0a47e60
+--- /dev/null
++++ b/eks-addons/versions.tf
+@@ -0,0 +1,12 @@
++terraform {
++  required_version = ">= 1.8.0"
++
++  required_providers {
++
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 6.0"
++    }
++
++  }
++}
+diff --git a/eks-addons/vpc-cni.tf b/eks-addons/vpc-cni.tf
+new file mode 100644
+index 0000000..83136ce
+--- /dev/null
++++ b/eks-addons/vpc-cni.tf
+@@ -0,0 +1,17 @@
++##########################################
++# Amazon VPC CNI
++##########################################
++
++resource "aws_eks_addon" "vpc_cni" {
++
++  cluster_name = var.cluster_name
++
++  addon_name = "vpc-cni"
++
++  resolve_conflicts_on_create = "OVERWRITE"
++  resolve_conflicts_on_update = "OVERWRITE"
++
++  depends_on = [
++    aws_iam_role_policy_attachment.ebs_csi_policy
++  ]
++}
+diff --git a/eks-cluster/cloudwatch.tf b/eks-cluster/cloudwatch.tf
+new file mode 100644
+index 0000000..905fc4b
+--- /dev/null
++++ b/eks-cluster/cloudwatch.tf
+@@ -0,0 +1,17 @@
++##########################################
++# EKS Control Plane Logs
++##########################################
++
++resource "aws_cloudwatch_log_group" "eks" {
++
++  name = "/aws/eks/${var.cluster_name}/cluster"
++
++  retention_in_days = 90
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.cluster_name}-logs"
++    }
++  )
++}
+diff --git a/eks-cluster/cluster.tf b/eks-cluster/cluster.tf
+new file mode 100644
+index 0000000..96f77af
+--- /dev/null
++++ b/eks-cluster/cluster.tf
+@@ -0,0 +1,70 @@
++##########################################
++# EKS Cluster
++##########################################
++
++resource "aws_eks_cluster" "this" {
++
++  name    = var.cluster_name
++  version = var.cluster_version
++
++  role_arn = aws_iam_role.eks_cluster_role.arn
++
++  ##########################################
++  # Networking
++  ##########################################
++
++  vpc_config {
++
++    subnet_ids = var.private_subnet_ids
++
++    endpoint_private_access = var.endpoint_private_access
++    endpoint_public_access  = var.endpoint_public_access
++
++  }
++
++  ##########################################
++  # Kubernetes Secret Encryption
++  ##########################################
++
++  encryption_config {
++
++    provider {
++      key_arn = data.aws_kms_alias.eks.target_key_arn
++    }
++
++    resources = local.encryption_resources
++
++  }
++
++  ##########################################
++  # Control Plane Logging
++  ##########################################
++
++  enabled_cluster_log_types = var.cluster_log_types
++
++  ##########################################
++  # Tags
++  ##########################################
++
++  tags = merge(
++    var.tags,
++    {
++      Name = var.cluster_name
++    }
++  )
++
++  ##########################################
++  # Dependencies
++  ##########################################
++
++  depends_on = [
++
++    aws_cloudwatch_log_group.eks,
++
++    aws_iam_role_policy_attachment.cluster_policy,
++
++    aws_iam_role_policy_attachment.vpc_controller
++
++  ]
++
++}
+diff --git a/eks-cluster/data.tf b/eks-cluster/data.tf
+new file mode 100644
+index 0000000..057da42
+--- /dev/null
++++ b/eks-cluster/data.tf
+@@ -0,0 +1,21 @@
++##########################################
++# AWS Caller Identity
++##########################################
++
++data "aws_caller_identity" "current" {}
++
++##########################################
++# AWS Region
++##########################################
++
++data "aws_region" "current" {}
++
++##########################################
++# KMS Key
++##########################################
++
++data "aws_kms_alias" "eks" {
++
++  name = "alias/${var.project_name}-${var.environment}-eks"
++
++}
+diff --git a/eks-cluster/iam.tf b/eks-cluster/iam.tf
+new file mode 100644
+index 0000000..9cf65b6
+--- /dev/null
++++ b/eks-cluster/iam.tf
+@@ -0,0 +1,54 @@
++##########################################
++# EKS Cluster IAM Role
++##########################################
++
++resource "aws_iam_role" "eks_cluster_role" {
++
++  name = "${var.project_name}-${var.environment}-eks-cluster-role"
++
++  assume_role_policy = jsonencode({
++
++    Version = "2012-10-17"
++
++    Statement = [
++      {
++        Effect = "Allow"
++
++        Principal = {
++          Service = "eks.amazonaws.com"
++        }
++
++        Action = "sts:AssumeRole"
++      }
++    ]
++  })
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.cluster_name}-cluster-role"
++    }
++  )
++}
++
++##########################################
++# Amazon EKS Cluster Policy
++##########################################
++
++resource "aws_iam_role_policy_attachment" "cluster_policy" {
++
++  role       = aws_iam_role.eks_cluster_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
++
++}
++
++##########################################
++# Amazon EKS VPC Resource Controller
++##########################################
++
++resource "aws_iam_role_policy_attachment" "vpc_controller" {
++
++  role       = aws_iam_role.eks_cluster_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
++
++}
+diff --git a/eks-cluster/kms.tf b/eks-cluster/kms.tf
+new file mode 100644
+index 0000000..dbce1f0
+--- /dev/null
++++ b/eks-cluster/kms.tf
+@@ -0,0 +1,11 @@
++##########################################
++# EKS Secret Encryption
++##########################################
++
++locals {
++
++  encryption_resources = [
++    "secrets"
++  ]
++
++}
+diff --git a/eks-cluster/oidc.tf b/eks-cluster/oidc.tf
+new file mode 100644
+index 0000000..60ce518
+--- /dev/null
++++ b/eks-cluster/oidc.tf
+@@ -0,0 +1,37 @@
++##########################################
++# EKS OIDC Certificate
++##########################################
++
++data "tls_certificate" "eks" {
++
++  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
++
++}
++
++##########################################
++# IAM OIDC Provider
++##########################################
++
++resource "aws_iam_openid_connect_provider" "eks" {
++
++  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
++
++  client_id_list = [
++    "sts.amazonaws.com"
++  ]
++
++  thumbprint_list = [
++    data.tls_certificate.eks.certificates[0].sha1_fingerprint
++  ]
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.cluster_name}-oidc"
++    }
++  )
++
++  depends_on = [
++    aws_eks_cluster.this
++  ]
++}
+diff --git a/eks-cluster/outputs.tf b/eks-cluster/outputs.tf
+new file mode 100644
+index 0000000..7a54692
+--- /dev/null
++++ b/eks-cluster/outputs.tf
+@@ -0,0 +1,60 @@
++##########################################
++# Cluster Outputs
++##########################################
++
++output "cluster_name" {
++  description = "EKS Cluster Name"
++  value       = aws_eks_cluster.this.name
++}
++
++output "cluster_arn" {
++  description = "EKS Cluster ARN"
++  value       = aws_eks_cluster.this.arn
++}
++
++output "cluster_endpoint" {
++  description = "EKS Cluster Endpoint"
++  value       = aws_eks_cluster.this.endpoint
++}
++
++output "cluster_version" {
++  description = "Kubernetes Version"
++  value       = aws_eks_cluster.this.version
++}
++
++output "cluster_certificate_authority_data" {
++  description = "Cluster CA Certificate"
++  value       = aws_eks_cluster.this.certificate_authority[0].data
++}
++
++##########################################
++# Networking Outputs
++##########################################
++
++output "cluster_security_group_id" {
++  description = "Cluster Security Group"
++  value       = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
++}
++
++##########################################
++# OIDC Outputs
++##########################################
++
++output "oidc_provider_arn" {
++  description = "OIDC Provider ARN"
++  value       = aws_iam_openid_connect_provider.eks.arn
++}
++
++output "oidc_provider_url" {
++  description = "OIDC Provider URL"
++  value       = aws_iam_openid_connect_provider.eks.url
++}
++
++##########################################
++# IAM Outputs
++##########################################
++
++output "cluster_role_arn" {
++  description = "Cluster IAM Role ARN"
++  value       = aws_iam_role.eks_cluster_role.arn
++}
+diff --git a/eks-cluster/variables.tf b/eks-cluster/variables.tf
+new file mode 100644
+index 0000000..3436489
+--- /dev/null
++++ b/eks-cluster/variables.tf
+@@ -0,0 +1,90 @@
++##########################################
++# Project
++##########################################
++
++variable "project_name" {
++  description = "Project name"
++  type        = string
++}
++
++variable "environment" {
++  description = "Environment"
++  type        = string
++}
++
++##########################################
++# AWS
++##########################################
++
++variable "aws_region" {
++  description = "AWS Region"
++  type        = string
++}
++
++##########################################
++# Cluster
++##########################################
++
++variable "cluster_name" {
++  description = "EKS Cluster Name"
++  type        = string
++}
++
++variable "cluster_version" {
++  description = "Kubernetes Version"
++  type        = string
++}
++
++##########################################
++# Networking
++##########################################
++
++variable "vpc_id" {
++  description = "VPC ID"
++  type        = string
++}
++
++variable "private_subnet_ids" {
++  description = "Private Application Subnets"
++  type        = list(string)
++}
++
++##########################################
++# Logging
++##########################################
++
++variable "cluster_log_types" {
++
++  type = list(string)
++
++  default = [
++    "api",
++    "audit",
++    "authenticator",
++    "controllerManager",
++    "scheduler"
++  ]
++}
++
++##########################################
++# Endpoint Access
++##########################################
++
++variable "endpoint_private_access" {
++  type    = bool
++  default = true
++}
++
++variable "endpoint_public_access" {
++  type    = bool
++  default = true
++}
++
++##########################################
++# Tags
++##########################################
++
++variable "tags" {
++  type    = map(string)
++  default = {}
++}
+diff --git a/eks-cluster/versions.tf b/eks-cluster/versions.tf
+new file mode 100644
+index 0000000..f4fb854
+--- /dev/null
++++ b/eks-cluster/versions.tf
+@@ -0,0 +1,17 @@
++terraform {
++  required_version = ">= 1.8.0"
++
++  required_providers {
++
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 6.0"
++    }
++
++    tls = {
++      source  = "hashicorp/tls"
++      version = "~> 4.0"
++    }
++
++  }
++}
+diff --git a/eks-nodegroup/data.tf b/eks-nodegroup/data.tf
+new file mode 100644
+index 0000000..1eee962
+--- /dev/null
++++ b/eks-nodegroup/data.tf
+@@ -0,0 +1,9 @@
++##########################################
++# Existing EKS Cluster
++##########################################
++
++data "aws_eks_cluster" "this" {
++
++  name = var.cluster_name
++
++}
+diff --git a/eks-nodegroup/iam.tf b/eks-nodegroup/iam.tf
+new file mode 100644
+index 0000000..86a5d95
+--- /dev/null
++++ b/eks-nodegroup/iam.tf
+@@ -0,0 +1,78 @@
++`##########################################
++# EKS Node IAM Role
++##########################################
++
++resource "aws_iam_role" "eks_node_role" {
++
++  name = "${var.project_name}-${var.environment}-${var.node_group_name}-node-role"
++
++  assume_role_policy = jsonencode({
++
++    Version = "2012-10-17"
++
++    Statement = [
++      {
++        Effect = "Allow"
++
++        Principal = {
++          Service = "ec2.amazonaws.com"
++        }
++
++        Action = "sts:AssumeRole"
++      }
++    ]
++  })
++
++  tags = merge(
++    var.tags,
++    {
++      Name = "${var.node_group_name}-node-role"
++    }
++  )
++}
++##########################################
++# EKS WORKER IAM Role
++##########################################
++resource "aws_iam_role_policy_attachment" "worker_node_policy" {
++
++  role       = aws_iam_role.eks_node_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
++
++}
++##########################################
++# ECR Pull Policy
++##########################################
++resource "aws_iam_role_policy_attachment" "ecr_pull_policy" {
++
++  role       = aws_iam_role.eks_node_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
++
++}
++##########################################
++# CNI Policy
++##########################################
++resource "aws_iam_role_policy_attachment" "cni_policy" {
++
++  role       = aws_iam_role.eks_node_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
++
++}
++##########################################
++# SSM Policy
++##########################################
++resource "aws_iam_role_policy_attachment" "ssm_policy" {
++
++  role       = aws_iam_role.eks_node_role.name
++  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
++
++}
++##########################################
++# CloudWatch Agent Policy
++##########################################
++
++resource "aws_iam_role_policy_attachment" "cloudwatch_agent_policy" {
++
++  role       = aws_iam_role.eks_node_role.name
++  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
++
++}
+diff --git a/eks-nodegroup/node_group.tf b/eks-nodegroup/node_group.tf
+new file mode 100644
+index 0000000..a2557f1
+--- /dev/null
++++ b/eks-nodegroup/node_group.tf
+@@ -0,0 +1,86 @@
++##########################################
++# EKS Managed Node Group
++##########################################
++
++resource "aws_eks_node_group" "this" {
++
++  cluster_name    = var.cluster_name
++
++  node_group_name = var.node_group_name
++
++  node_role_arn   = aws_iam_role.eks_node_role.arn
++
++  subnet_ids = var.private_subnet_ids
++
++  ##########################################
++  # Capacity
++  ##########################################
++
++  capacity_type  = var.capacity_type
++
++  instance_types = var.instance_types
++
++  ##########################################
++  # Scaling
++  ##########################################
++
++  scaling_config {
++
++    desired_size = var.desired_size
++
++    min_size = var.min_size
++
++    max_size = var.max_size
++
++  }
++
++  ##########################################
++  # Rolling Updates
++  ##########################################
++
++  update_config {
++
++    max_unavailable = 1
++
++  }
++
++  ##########################################
++  # Labels
++  ##########################################
++
++  labels = {
++
++    environment = var.environment
++
++    nodegroup = var.node_group_name
++
++  }
++
++  ##########################################
++  # Tags
++  ##########################################
++
++  tags = merge(
++    var.tags,
++    {
++      Name = var.node_group_name
++    }
++  )
++
++  ##########################################
++  # Dependencies
++  ##########################################
++
++  depends_on = [
++
++    aws_iam_role_policy_attachment.worker_node_policy,
++
++    aws_iam_role_policy_attachment.ecr_pull_policy,
++
++    aws_iam_role_policy_attachment.cni_policy,
++
++    aws_iam_role_policy_attachment.ssm_policy
++
++  ]
++
++}
+diff --git a/eks-nodegroup/outputs.tf b/eks-nodegroup/outputs.tf
+new file mode 100644
+index 0000000..c33ad82
+--- /dev/null
++++ b/eks-nodegroup/outputs.tf
+@@ -0,0 +1,27 @@
++##########################################
++# Node Group Outputs
++##########################################
++
++output "node_group_name" {
++  description = "Managed Node Group Name"
++  value       = aws_eks_node_group.this.node_group_name
++}
++
++output "node_group_arn" {
++  description = "Managed Node Group ARN"
++  value       = aws_eks_node_group.this.arn
++}
++
++##########################################
++# IAM Outputs
++##########################################
++
++output "node_role_arn" {
++  description = "Node IAM Role ARN"
++  value       = aws_iam_role.eks_node_role.arn
++}
++
++output "ebs_csi_role_arn" {
++  description = "EBS CSI IAM Role ARN"
++  value       = aws_iam_role.ebs_csi_role.arn
++}
+diff --git a/eks-nodegroup/variables.tf b/eks-nodegroup/variables.tf
+new file mode 100644
+index 0000000..655981c
+--- /dev/null
++++ b/eks-nodegroup/variables.tf
+@@ -0,0 +1,85 @@
++##########################################
++# Project
++##########################################
++
++variable "project_name" {
++  type = string
++}
++
++variable "environment" {
++  type = string
++}
++
++##########################################
++# AWS
++##########################################
++
++variable "aws_region" {
++  type = string
++}
++
++##########################################
++# Existing Cluster
++##########################################
++
++variable "cluster_name" {
++  type = string
++}
++
++##########################################
++# Networking
++##########################################
++
++variable "private_subnet_ids" {
++  type = list(string)
++}
++
++##########################################
++# Node Group
++##########################################
++
++variable "node_group_name" {
++  type = string
++}
++
++variable "instance_types" {
++  type = list(string)
++}
++
++variable "capacity_type" {
++  type    = string
++  default = "ON_DEMAND"
++}
++
++variable "desired_size" {
++  type = number
++}
++
++variable "min_size" {
++  type = number
++}
++
++variable "max_size" {
++  type = number
++}
++
++##########################################
++# OIDC
++##########################################
++
++variable "oidc_provider_arn" {
++  type = string
++}
++
++variable "oidc_provider_url" {
++  type = string
++}
++
++##########################################
++# Tags
++##########################################
++
++variable "tags" {
++  type    = map(string)
++  default = {}
++}
+diff --git a/eks-nodegroup/versions.tf b/eks-nodegroup/versions.tf
+new file mode 100644
+index 0000000..0a47e60
+--- /dev/null
++++ b/eks-nodegroup/versions.tf
+@@ -0,0 +1,12 @@
++terraform {
++  required_version = ">= 1.8.0"
++
++  required_providers {
++
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 6.0"
++    }
++
++  }
++}
